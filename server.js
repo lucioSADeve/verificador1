@@ -170,6 +170,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         }
 
         // Lê o arquivo Excel
+        console.log('Lendo arquivo Excel...');
         const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
         
         if (!workbook.SheetNames.length) {
@@ -213,6 +214,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             }
 
             // Adiciona os domínios à fila de processamento
+            console.log('Adicionando domínios à fila de processamento...');
             domainQueue.addDomains(domainsData);
 
             // Retorna imediatamente com o ID da verificação

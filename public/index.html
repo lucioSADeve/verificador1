@@ -113,6 +113,8 @@
             errorMessage.textContent = message;
             errorMessage.classList.remove('d-none');
             successMessage.classList.add('d-none');
+            submitBtn.disabled = false;
+            progressSection.classList.add('d-none');
         }
 
         function showSuccess(message) {
@@ -127,9 +129,9 @@
         }
 
         function updateStats(stats) {
-            totalCount.textContent = stats.total;
-            availableCount.textContent = stats.available;
-            unavailableCount.textContent = stats.unavailable;
+            totalCount.textContent = stats.total || 0;
+            availableCount.textContent = stats.available || 0;
+            unavailableCount.textContent = stats.unavailable || 0;
         }
 
         function displayResults(results) {
@@ -211,18 +213,21 @@
                 try {
                     const response = await fetch('/api/progress');
                     if (!response.ok) {
-                        throw new Error('Erro ao obter progresso');
+                        const errorData = await response.json();
+                        throw new Error(errorData.error || 'Erro ao obter progresso');
                     }
                     const data = await response.json();
                     
-                    updateProgress(Math.round((data.processed / data.total) * 100));
-                    updateStats({
-                        total: data.total,
-                        available: data.available.length,
-                        unavailable: data.unavailable.length
-                    });
+                    if (data.total > 0) {
+                        updateProgress(Math.round((data.processed / data.total) * 100));
+                        updateStats({
+                            total: data.total,
+                            available: data.available.length,
+                            unavailable: data.unavailable ? data.unavailable.length : 0
+                        });
+                    }
 
-                    if (data.processed === data.total) {
+                    if (data.processed === data.total && data.total > 0) {
                         clearInterval(monitoringInterval);
                         displayResults(data);
                         resultsSection.classList.remove('d-none');
@@ -231,7 +236,7 @@
                     }
                 } catch (error) {
                     console.error('Erro ao monitorar progresso:', error);
-                    showError('Erro ao monitorar progresso. Tente novamente.');
+                    showError(error.message || 'Erro ao monitorar progresso. Tente novamente.');
                 }
             }, 1000);
         }
@@ -286,8 +291,7 @@
                 startMonitoring();
             } catch (error) {
                 console.error('Erro:', error);
-                showError(error.message);
-                submitBtn.disabled = false;
+                showError(error.message || 'Erro ao fazer upload do arquivo. Tente novamente.');
             }
         });
 
