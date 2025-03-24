@@ -183,7 +183,18 @@
                 console.log('Resposta do servidor:', data);
 
                 if (!response.ok) {
-                    throw new Error(data.error || data.details || `Erro no upload: ${response.status}`);
+                    let errorMessage = 'Erro desconhecido';
+                    if (data && typeof data === 'object') {
+                        if (data.error && typeof data.error === 'string') {
+                            errorMessage = data.error;
+                        } else if (data.error && typeof data.error === 'object') {
+                            errorMessage = JSON.stringify(data.error);
+                        }
+                        if (data.detalhes) {
+                            errorMessage += `<br><small>Detalhes: ${data.detalhes}</small>`;
+                        }
+                    }
+                    throw new Error(errorMessage);
                 }
 
                 if (data.error) {
@@ -251,6 +262,10 @@
                 }
 
                 const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
                 
                 if (data.total > 0) {
                     const percent = Math.round((data.processed / data.total) * 100);
