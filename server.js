@@ -163,21 +163,47 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     }
 
     try {
-        // Lê o arquivo Excel
-        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        // Verifica o tipo do arquivo
+        if (!req.file.mimetype.includes('spreadsheet') && !req.file.mimetype.includes('excel')) {
+            return res.status(400).json({ error: 'Arquivo inválido. Por favor, envie um arquivo Excel (.xlsx ou .xls)' });
+        }
+
+        // Verifica o tamanho do arquivo (máximo 10MB)
+        if (req.file.size > 10 * 1024 * 1024) {
+            return res.status(400).json({ error: 'Arquivo muito grande. O tamanho máximo permitido é 10MB.' });
+        }
+
+        // Lê o arquivo Excel com tratamento de erro
+        let workbook;
+        try {
+            workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        } catch (error) {
+            console.error('Erro ao ler arquivo Excel:', error);
+            return res.status(400).json({ error: 'Erro ao ler o arquivo Excel. Verifique se o arquivo está correto.' });
+        }
+
+        if (!workbook.SheetNames.length) {
+            return res.status(400).json({ error: 'O arquivo Excel está vazio' });
+        }
+
         const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        
-        // Converte para JSON
         const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 'A' });
         
         // Extrai os domínios da coluna B, mantendo os dados da coluna A
         const domainsData = rows.map(row => ({
-            originalData: row.A || '',  // Dados da coluna A
-            domain: row.B || ''        // Domínio da coluna B
-        })).filter(item => item.domain); // Remove linhas sem domínio
+            originalData: row.A || '',
+            domain: row.B || ''
+        })).filter(item => {
+            // Validação mais rigorosa do domínio
+            const domain = item.domain.toString().trim().toLowerCase();
+            return domain && 
+                   domain.length > 0 && 
+                   domain.length <= 253 && 
+                   /^[a-z0-9][a-z0-9-]{0,61}[a-z0-9](?:\.[a-z]{2,})+$/.test(domain);
+        });
 
         if (domainsData.length === 0) {
-            return res.status(400).json({ error: 'Nenhum domínio encontrado na coluna B' });
+            return res.status(400).json({ error: 'Nenhum domínio válido encontrado na coluna B. Verifique o formato dos domínios.' });
         }
 
         // Cria um ID único para esta verificação
@@ -191,7 +217,6 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             worker.on('message', (message) => {
                 switch (message.type) {
                     case 'progress':
-                        // Adiciona os dados originais ao progresso
                         const progressData = {
                             ...message,
                             originalData: domainsData[message.currentIndex]?.originalData
@@ -204,7 +229,6 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
                         break;
 
                     case 'complete':
-                        // Adiciona os dados originais aos resultados
                         const resultsWithOriginalData = message.results.map((result, index) => ({
                             ...result,
                             originalData: domainsData[index]?.originalData
@@ -212,7 +236,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
                         broadcastToClients({
                             type: 'complete',
                             checkId,
-                            results: resultsWithOriginalData
+                            results: resultsWithOriginalData,
+                            summary: message.summary
                         });
                         worker.terminate();
                         break;
@@ -225,6 +250,22 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
                         });
                         worker.terminate();
                         break;
+                }
+            });
+
+            worker.on('error', (error) => {
+                console.error('Erro no worker:', error);
+                broadcastToClients({
+                    type: 'error',
+                    checkId,
+                    error: 'Erro interno no processamento'
+                });
+                worker.terminate();
+            });
+
+            worker.on('exit', (code) => {
+                if (code !== 0) {
+                    console.error(`Worker parou com código de saída ${code}`);
                 }
             });
 
@@ -243,14 +284,16 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         } catch (error) {
             console.error('Erro ao iniciar verificação:', error);
             res.status(500).json({ 
-                error: 'Erro interno ao processar domínios'
+                error: 'Erro interno ao processar domínios',
+                details: error.message
             });
         }
 
     } catch (error) {
-        console.error('Erro ao processar arquivo Excel:', error);
+        console.error('Erro no upload:', error);
         res.status(500).json({ 
-            error: 'Erro ao processar arquivo Excel'
+            error: 'Erro no processamento do arquivo',
+            details: error.message
         });
     }
 });

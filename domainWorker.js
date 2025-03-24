@@ -3,15 +3,17 @@ const pLimit = require('p-limit');
 const fetch = require('node-fetch');
 
 // Configurações otimizadas
-const CONCURRENT_LIMIT = 10; // 10 verificações simultâneas
-const BATCH_SIZE = 5;        // 5 domínios por lote
-const FETCH_TIMEOUT = 3000;  // 3 segundos
+const CONCURRENT_LIMIT = 3; // Reduzido para 3 verificações simultâneas
+const BATCH_SIZE = 2;       // Reduzido para 2 domínios por lote
+const FETCH_TIMEOUT = 10000; // Aumentado para 10 segundos
+const RETRY_DELAY = 3000;   // 3 segundos entre tentativas
+const MAX_RETRIES = 3;      // Máximo de 3 tentativas
 
 // Cache otimizado
 const resultsCache = new Map();
 
-// Função otimizada para verificar domínio
-async function checkDomain(domain) {
+// Função otimizada para verificar domínio com retry
+async function checkDomain(domain, retryCount = 0) {
     if (resultsCache.has(domain)) {
         return resultsCache.get(domain);
     }
@@ -24,7 +26,8 @@ async function checkDomain(domain) {
             method: 'GET',
             headers: {
                 'Accept': 'application/json',
-                'Cache-Control': 'no-cache'
+                'Cache-Control': 'no-cache',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             },
             signal: controller.signal,
             timeout: FETCH_TIMEOUT
@@ -33,7 +36,7 @@ async function checkDomain(domain) {
         clearTimeout(timeoutId);
 
         if (!response.ok) {
-            throw new Error('API error');
+            throw new Error(`Erro HTTP! status: ${response.status}`);
         }
 
         const data = await response.json();
@@ -41,7 +44,12 @@ async function checkDomain(domain) {
         resultsCache.set(domain, isAvailable);
         return isAvailable;
     } catch (error) {
-        // Em caso de erro, considera como indisponível
+        if (retryCount < MAX_RETRIES) {
+            console.log(`Tentativa ${retryCount + 1} de ${MAX_RETRIES} para ${domain}`);
+            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+            return checkDomain(domain, retryCount + 1);
+        }
+        console.error(`Erro ao verificar ${domain}:`, error.message);
         return false;
     }
 }
@@ -52,6 +60,7 @@ async function processDomainsParallel(domains) {
     const results = [];
     let processed = 0;
     let available = 0;
+    let errors = 0;
     
     // Processa em lotes pequenos
     for (let i = 0; i < domains.length; i += BATCH_SIZE) {
@@ -60,28 +69,34 @@ async function processDomainsParallel(domains) {
         const batchPromises = batch.map(domain => 
             limit(async () => {
                 try {
-                    const isAvailable = await checkDomain(domain.domain);
+                    const isAvailable = await checkDomain(domain);
                     processed++;
                     if (isAvailable) available++;
                     
                     // Reporta progresso para cada domínio
                     parentPort.postMessage({
                         type: 'progress',
+                        currentIndex: i + batch.indexOf(domain),
                         processed,
                         total: domains.length,
-                        available
+                        available,
+                        errors,
+                        currentDomain: domain
                     });
 
                     return {
-                        ...domain,
-                        available: isAvailable
+                        domain,
+                        available: isAvailable,
+                        error: false
                     };
                 } catch (error) {
                     processed++;
+                    errors++;
                     return {
-                        ...domain,
+                        domain,
                         available: false,
-                        error: true
+                        error: true,
+                        errorMessage: error.message
                     };
                 }
             })
@@ -90,6 +105,9 @@ async function processDomainsParallel(domains) {
         // Processa lote atual
         const batchResults = await Promise.all(batchPromises);
         results.push(...batchResults);
+
+        // Pausa maior entre lotes para evitar sobrecarga
+        await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
     return results;
@@ -106,7 +124,14 @@ parentPort.on('message', async ({ domains }) => {
         
         parentPort.postMessage({ 
             type: 'complete', 
-            results 
+            results,
+            summary: {
+                total: domains.length,
+                processed: results.length,
+                available: results.filter(r => r.available).length,
+                errors: results.filter(r => r.error).length,
+                time: console.timeEnd('processamento')
+            }
         });
     } catch (error) {
         console.error('Erro fatal:', error);

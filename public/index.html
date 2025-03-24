@@ -145,6 +145,20 @@
             const file = e.target.files[0];
             if (!file) return;
 
+            // Verifica o tipo do arquivo
+            if (!file.type.includes('spreadsheet') && !file.type.includes('excel')) {
+                results.innerHTML = '<p style="color: red">Erro: Por favor, selecione um arquivo Excel (.xlsx ou .xls)</p>';
+                fileInput.value = '';
+                return;
+            }
+
+            // Verifica o tamanho do arquivo (máximo 10MB)
+            if (file.size > 10 * 1024 * 1024) {
+                results.innerHTML = '<p style="color: red">Erro: O arquivo é muito grande. O tamanho máximo permitido é 10MB.</p>';
+                fileInput.value = '';
+                return;
+            }
+
             console.log('Arquivo selecionado:', file.name);
             const formData = new FormData();
             formData.append('file', file);
@@ -165,12 +179,12 @@
                     body: formData
                 });
 
-                if (!response.ok) {
-                    throw new Error(`Erro no upload: ${response.status}`);
-                }
-
                 const data = await response.json();
                 console.log('Resposta do servidor:', data);
+
+                if (!response.ok) {
+                    throw new Error(data.error || data.details || `Erro no upload: ${response.status}`);
+                }
 
                 if (data.error) {
                     throw new Error(data.error);
@@ -179,7 +193,12 @@
                 startMonitoring();
             } catch (error) {
                 console.error('Erro:', error);
-                results.innerHTML = `<p style="color: red">Erro: ${error.message}</p>`;
+                results.innerHTML = `
+                    <p style="color: red">
+                        <strong>Erro:</strong> ${error.message}<br>
+                        <small>Por favor, verifique se o arquivo está correto e tente novamente.</small>
+                    </p>
+                `;
                 loading.style.display = 'none';
                 progress.innerHTML = '';
                 clearButton.style.display = 'none';
@@ -204,7 +223,12 @@
                 } catch (error) {
                     console.error('Erro:', error);
                     clearInterval(checkInterval);
-                    progress.innerHTML = `<p style="color: red">Erro: ${error.message}</p>`;
+                    progress.innerHTML = `
+                        <p style="color: red">
+                            <strong>Erro ao verificar progresso:</strong> ${error.message}<br>
+                            <small>Tente recarregar a página e fazer o upload novamente.</small>
+                        </p>
+                    `;
                     isProcessing = false;
                 }
             }, 1000);
@@ -222,6 +246,10 @@
                     }
                 });
                 
+                if (!response.ok) {
+                    throw new Error(`Erro ao verificar progresso: ${response.status}`);
+                }
+
                 const data = await response.json();
                 
                 if (data.total > 0) {
@@ -231,6 +259,8 @@
                         <strong>Progresso: ${percent}%</strong><br>
                         Processados: ${data.processed} de ${data.total}<br>
                         Disponíveis: ${data.available || 0}<br>
+                        Erros: ${data.errors || 0}<br>
+                        ${data.currentDomain ? `<small>Processando: ${data.currentDomain}</small><br>` : ''}
                         <small>Tempo estimado: ${Math.ceil((data.total - data.processed) / (data.processed || 1) * 1)} segundos</small>
                     `;
 
@@ -238,7 +268,7 @@
                     clearButton.style.display = 'inline-block';
 
                     if (data.processed === data.total) {
-                        showDownloadButton();
+                        showDownloadButton(data);
                         isProcessing = false;
                         return true;
                     }
@@ -246,15 +276,28 @@
                 return false;
             } catch (error) {
                 console.error('Erro ao verificar progresso:', error);
-                progress.innerHTML = `<p style="color: red">Erro ao verificar progresso: ${error.message}</p>`;
+                progress.innerHTML = `
+                    <p style="color: red">
+                        <strong>Erro ao verificar progresso:</strong> ${error.message}<br>
+                        <small>Tente recarregar a página e fazer o upload novamente.</small>
+                    </p>
+                `;
                 isProcessing = false;
                 return true;
             }
         }
 
-        function showDownloadButton() {
+        function showDownloadButton(data) {
+            const summary = data?.summary || {};
             results.innerHTML = `
                 <h3>Processamento concluído!</h3>
+                <p>
+                    <strong>Resumo:</strong><br>
+                    Total de domínios: ${summary.total || 0}<br>
+                    Disponíveis: ${summary.available || 0}<br>
+                    Erros: ${summary.errors || 0}<br>
+                    ${summary.time ? `Tempo total: ${summary.time}` : ''}
+                </p>
                 <div class="button-container">
                     <a href="/api/download-results" class="download-button">
                         Baixar Domínios Disponíveis
