@@ -1,390 +1,289 @@
+require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const multer = require('multer');
 const XLSX = require('xlsx');
-const path = require('path');
-const domainQueue = require('./domainQueue');
+const axios = require('axios');
 const { Worker } = require('worker_threads');
-const os = require('os');
-const cors = require('cors');
+const path = require('path');
+const WebSocket = require('ws');
 const config = require('./config');
 
 const app = express();
+const upload = multer({ storage: multer.memoryStorage() });
+const port = process.env.PORT || 3000;
 
-// Adicione esta configuração do CORS logo após criar o app
+// Configurações básicas
 app.use(cors({
-    origin: ['https://verificador-dominios-v4.vercel.app', 'http://localhost:3000'],
-    methods: ['GET', 'POST'],
-    allowedHeaders: ['Content-Type', 'Accept']
+    origin: [
+        'https://verificador1.vercel.app',
+        'http://localhost:3000',
+        'https://verificador1-ks959qzxd-lucio-dev-s-projects.vercel.app',
+        'https://verificador1-git-main-lucio-dev-s-projects.vercel.app'
+    ],
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    credentials: true
 }));
 
-// Configuração para servir arquivos estáticos
-app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.json());
+// Middleware para logging
+app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    console.log('Headers:', req.headers);
+    next();
+});
 
-// Rota principal - deve vir depois do express.static
+// Middleware para tratamento de erros
+app.use((err, req, res, next) => {
+    console.error('Erro:', err);
+    console.error('Stack:', err.stack);
+    res.status(500).json({ 
+        error: 'Erro interno do servidor',
+        message: err.message
+    });
+});
+
+// Middleware para verificar origem da requisição
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    console.log('Origem da requisição:', origin);
+    next();
+});
+
+app.use(express.json());
+app.use(express.static('public'));
+
+// Armazena as conexões WebSocket ativas
+const clients = new Set();
+
+// Função para verificar DA do domínio
+async function checkDomain(domain) {
+    try {
+        const accessId = 'mozscape-L4CG6PRKJ0';
+        const secretKey = 'tvrA6SPh3bACf8US6xIF9tlGVy6GZNrY';
+        const auth = Buffer.from(`${accessId}:${secretKey}`).toString('base64');
+
+        const response = await axios({
+            method: 'post',
+            url: 'https://lsapi.seomoz.com/v2/url_metrics',
+            headers: { 
+                'Authorization': `Basic ${auth}`,
+                'Content-Type': 'application/json'
+            },
+            data: {
+                targets: [domain]
+            }
+        });
+
+        return response.data.results[0]?.domain_authority || 0;
+    } catch (error) {
+        console.error(`Erro ao verificar ${domain}:`, error.message);
+        return 0;
+    }
+}
+
+// Função para enviar atualizações para todos os clientes
+function broadcastToClients(data) {
+    for (const client of clients) {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(data));
+        }
+    }
+}
+
+// Rota principal para verificação de domínios
+app.post('/api/check', async (req, res) => {
+    const { domains } = req.body;
+    
+    if (!Array.isArray(domains) || domains.length === 0) {
+        return res.status(400).json({ error: 'Lista de domínios inválida' });
+    }
+
+    // Cria um ID único para esta verificação
+    const checkId = Date.now().toString();
+
+    try {
+        // Cria um novo worker para processar os domínios
+        const worker = new Worker('./domainWorker.js');
+
+        // Configura os listeners do worker
+        worker.on('message', (message) => {
+            switch (message.type) {
+                case 'progress':
+                    // Envia atualização de progresso via WebSocket
+                    broadcastToClients({
+                        type: 'progress',
+                        checkId,
+                        ...message
+                    });
+                    break;
+
+                case 'complete':
+                    // Envia resultados finais via WebSocket
+                    broadcastToClients({
+                        type: 'complete',
+                        checkId,
+                        results: message.results
+                    });
+                    worker.terminate();
+                    break;
+
+                case 'error':
+                    // Envia erro via WebSocket
+                    broadcastToClients({
+                        type: 'error',
+                        checkId,
+                        error: message.error
+                    });
+                    worker.terminate();
+                    break;
+            }
+        });
+
+        // Inicia o processamento
+        worker.postMessage({ domains });
+
+        // Retorna imediatamente com o ID da verificação
+        res.json({ 
+            checkId,
+            message: 'Verificação iniciada'
+        });
+    } catch (error) {
+        console.error('Erro ao iniciar verificação:', error);
+        res.status(500).json({ 
+            error: 'Erro interno ao processar domínios'
+        });
+    }
+});
+
+// Rota para upload de arquivo Excel
+app.post('/api/upload', upload.single('file'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'Nenhum arquivo foi enviado' });
+    }
+
+    try {
+        // Lê o arquivo Excel
+        const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        
+        // Converte para JSON
+        const rows = XLSX.utils.sheet_to_json(firstSheet, { header: 'A' });
+        
+        // Extrai os domínios da coluna B, mantendo os dados da coluna A
+        const domainsData = rows.map(row => ({
+            originalData: row.A || '',  // Dados da coluna A
+            domain: row.B || ''        // Domínio da coluna B
+        })).filter(item => item.domain); // Remove linhas sem domínio
+
+        if (domainsData.length === 0) {
+            return res.status(400).json({ error: 'Nenhum domínio encontrado na coluna B' });
+        }
+
+        // Cria um ID único para esta verificação
+        const checkId = Date.now().toString();
+
+        try {
+            // Cria um novo worker para processar os domínios
+            const worker = new Worker('./domainWorker.js');
+
+            // Configura os listeners do worker
+            worker.on('message', (message) => {
+                switch (message.type) {
+                    case 'progress':
+                        // Adiciona os dados originais ao progresso
+                        const progressData = {
+                            ...message,
+                            originalData: domainsData[message.currentIndex]?.originalData
+                        };
+                        broadcastToClients({
+                            type: 'progress',
+                            checkId,
+                            ...progressData
+                        });
+                        break;
+
+                    case 'complete':
+                        // Adiciona os dados originais aos resultados
+                        const resultsWithOriginalData = message.results.map((result, index) => ({
+                            ...result,
+                            originalData: domainsData[index]?.originalData
+                        }));
+                        broadcastToClients({
+                            type: 'complete',
+                            checkId,
+                            results: resultsWithOriginalData
+                        });
+                        worker.terminate();
+                        break;
+
+                    case 'error':
+                        broadcastToClients({
+                            type: 'error',
+                            checkId,
+                            error: message.error
+                        });
+                        worker.terminate();
+                        break;
+                }
+            });
+
+            // Inicia o processamento apenas com os domínios
+            worker.postMessage({ 
+                domains: domainsData.map(item => item.domain)
+            });
+
+            // Retorna imediatamente com o ID da verificação
+            res.json({ 
+                checkId,
+                message: 'Verificação iniciada',
+                totalDomains: domainsData.length
+            });
+
+        } catch (error) {
+            console.error('Erro ao iniciar verificação:', error);
+            res.status(500).json({ 
+                error: 'Erro interno ao processar domínios'
+            });
+        }
+
+    } catch (error) {
+        console.error('Erro ao processar arquivo Excel:', error);
+        res.status(500).json({ 
+            error: 'Erro ao processar arquivo Excel'
+        });
+    }
+});
+
+// Rota para servir a página principal
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Configuração otimizada para ambiente serverless
-const numWorkers = process.env.VERCEL ? 2 : Math.max(4, os.cpus().length);
-const BATCH_SIZE = 100;
-const workers = new Map();
-const CONCURRENT_CHECKS = 25;
-
-// Configuração otimizada do Multer
-const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: {
-        fileSize: 20 * 1024 * 1024
-    },
-    fileFilter: (req, file, cb) => {
-        if (file.mimetype.includes('spreadsheet') || 
-            file.mimetype.includes('excel') ||
-            file.originalname.match(/\.(xlsx|xls)$/)) {
-            cb(null, true);
-        } else {
-            cb(new Error('Apenas arquivos Excel são permitidos!'));
-        }
-    }
+// Inicia o servidor HTTP
+const server = app.listen(port, '0.0.0.0', () => {
+    console.log(`Servidor rodando na porta ${port}`);
 });
 
-// Cache em memória para resultados
-const resultsCache = new Map();
+// Configura o WebSocket Server
+const wss = new WebSocket.Server({ server });
 
-// Adicionar um controle de perfis em uso
-const activeProfiles = new Map(); // Guarda perfis em uso
-let lastProfileIndex = 0; // Para fazer round-robin dos perfis
+wss.on('connection', (ws) => {
+    // Adiciona nova conexão ao conjunto de clientes
+    clients.add(ws);
+    console.log('Nova conexão WebSocket estabelecida');
 
-// Função para obter próximo perfil disponível
-async function getNextAvailableProfile() {
-    try {
-        const dolphinService = require('./services/dolphinService');
-        const profiles = await dolphinService.getProfiles();
-        if (!profiles.data || profiles.data.length === 0) {
-            throw new Error('Nenhum perfil Dolphin disponível');
-        }
-
-        // Round-robin entre os perfis
-        lastProfileIndex = (lastProfileIndex + 1) % profiles.data.length;
-        const profile = profiles.data[lastProfileIndex];
-
-        // Iniciar o perfil se ainda não estiver ativo
-        if (!activeProfiles.has(profile.id)) {
-            await dolphinService.startProfile(profile.id);
-            activeProfiles.set(profile.id, {
-                startTime: Date.now(),
-                tabs: 0
-            });
-        }
-
-        return profile;
-    } catch (error) {
-        console.error('Erro ao obter perfil:', error);
-        throw error;
-    }
-}
-
-// Função otimizada para processar domínios
-async function processDomainsBatch(domains) {
-    const chunks = [];
-    for (let i = 0; i < domains.length; i += BATCH_SIZE) {
-        chunks.push(domains.slice(i, i + BATCH_SIZE));
-    }
-
-    const workerPromises = chunks.map((chunk, index) => {
-        return new Promise((resolve, reject) => {
-            const worker = new Worker('./domainWorker.js');
-            const workerId = `worker-${index}`;
-            workers.set(workerId, worker);
-
-            // Adiciona timeout para o worker
-            const timeout = setTimeout(() => {
-                worker.terminate();
-                reject(new Error('Worker timeout'));
-            }, 30000); // 30 segundos de timeout
-
-            worker.on('message', (result) => {
-                clearTimeout(timeout);
-                resultsCache.set(workerId, result);
-                resolve(result);
-                worker.terminate();
-                workers.delete(workerId);
-            });
-
-            worker.on('error', (error) => {
-                clearTimeout(timeout);
-                reject(error);
-                worker.terminate();
-                workers.delete(workerId);
-            });
-
-            worker.postMessage({ 
-                domains: chunk, 
-                concurrent: CONCURRENT_CHECKS 
-            });
-        });
+    // Remove conexão quando fechada
+    ws.on('close', () => {
+        clients.delete(ws);
+        console.log('Conexão WebSocket fechada');
     });
 
-    return Promise.all(workerPromises.map(p => p.catch(err => {
-        console.error('Erro no worker:', err);
-        return [];
-    })));
-}
-
-// Rotas da API
-app.post('/api/upload-excel', upload.single('file'), async (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'Nenhum arquivo enviado' });
-
-    try {
-        const workbook = XLSX.read(req.file.buffer, { 
-            type: 'buffer',
-            cellDates: true,
-            cellNF: false,
-            cellText: false
-        });
-        
-        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-        const domains = new Set(); // Usa Set para evitar duplicatas
-        const range = XLSX.utils.decode_range(firstSheet['!ref']);
-        
-        // Otimiza a leitura do Excel
-        for (let row = range.s.r; row <= range.e.r; row++) {
-            const cellB = firstSheet[XLSX.utils.encode_cell({r: row, c: 1})]; // Coluna B
-            const cellA = firstSheet[XLSX.utils.encode_cell({r: row, c: 0})]; // Coluna A
-            
-            // Verifica se a célula B tem conteúdo válido
-            if (cellB && cellB.v && typeof cellB.v === 'string') {
-                const domain = cellB.v.toString().trim().toLowerCase();
-                // Verifica se é um domínio válido
-                if (domain && (domain.endsWith('.br') || domain.endsWith('.com.br'))) {
-                    domains.add({
-                        colA: cellA ? cellA.v.toString().trim() : '',
-                        domain: domain
-                    });
-                }
-            }
-        }
-
-        const uniqueDomains = Array.from(domains);
-        
-        if (uniqueDomains.length === 0) {
-            throw new Error('Nenhum domínio .br ou .com.br válido encontrado na coluna B');
-        }
-
-        console.log(`Total de domínios únicos válidos: ${uniqueDomains.length}`);
-
-        domainQueue.addDomains(uniqueDomains);
-        processDomainsBatch(uniqueDomains).catch(console.error);
-        
-        res.json({ 
-            message: `${uniqueDomains.length} domínios únicos adicionados à fila`,
-            totalDomains: uniqueDomains.length
-        });
-    } catch (error) {
-        console.error('Erro:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Cache otimizado para progresso
-const progressCache = {
-    lastUpdate: 0,
-    data: null,
-    ttl: 250
-};
-
-app.get('/api/progress', (req, res) => {
-    const now = Date.now();
-    if (progressCache.data && (now - progressCache.lastUpdate) < progressCache.ttl) {
-        return res.json(progressCache.data);
-    }
-
-    const progress = domainQueue.getProgress();
-    progressCache.data = progress;
-    progressCache.lastUpdate = now;
-    res.json(progress);
-});
-
-app.get('/api/download-results', (req, res) => {
-    try {
-        const wb = XLSX.utils.book_new();
-        const ws = XLSX.utils.aoa_to_sheet([
-            ['Coluna A', 'Dominio'],
-            ...domainQueue.results.available.map(({ colA, domain }) => [colA, domain])
-        ]);
-        
-        XLSX.utils.book_append_sheet(wb, ws, "Dominios Disponíveis");
-        
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-        res.setHeader('Content-Disposition', 'attachment; filename="dominios_disponiveis.xlsx"');
-        
-        const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx', compression: true });
-        res.send(buffer);
-    } catch (error) {
-        console.error('Erro:', error);
-        res.status(500).json({ error: 'Erro ao baixar resultados' });
-    }
-});
-
-// Rota para limpar cache e cancelar processamento
-app.post('/api/clear-cache', (req, res) => {
-    try {
-        // Limpa o cache e estado
-        domainQueue.clearResults();
-        
-        // Termina todos os workers ativos
-        workers.forEach(worker => {
-            try {
-                worker.terminate();
-            } catch (error) {
-                console.error('Erro ao terminar worker:', error);
-            }
-        });
-        workers.clear();
-        
-        // Limpa caches adicionais
-        resultsCache.clear();
-        progressCache.data = null;
-        progressCache.lastUpdate = 0;
-        
-        res.json({ 
-            success: true, 
-            message: 'Cache limpo e processamento cancelado com sucesso' 
-        });
-    } catch (error) {
-        console.error('Erro ao limpar cache:', error);
-        res.status(500).json({ 
-            error: 'Erro ao limpar cache e cancelar processamento' 
-        });
-    }
-});
-
-// Rota de teste para o Dolphin
-app.get('/api/test-dolphin', async (req, res) => {
-    try {
-        const dolphinService = require('./services/dolphinService');
-        console.log('Iniciando teste do Dolphin');
-        const profiles = await dolphinService.getProfiles();
-        console.log('Perfis obtidos:', profiles);
-        res.json({
-            success: true,
-            profiles: profiles,
-            apiUrl: config.dolphin.baseUrl
-        });
-    } catch (error) {
-        console.error('Erro ao testar Dolphin:', {
-            message: error.message,
-            stack: error.stack,
-            response: error.response?.data
-        });
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            details: error.response?.data
-        });
-    }
-});
-
-// Adicione esta nova rota de teste
-app.get('/api/test-dolphin-full', async (req, res) => {
-    try {
-        const dolphinService = require('./services/dolphinService');
-        
-        // Teste 1: Listar perfis
-        console.log('1. Testando listagem de perfis...');
-        const profiles = await dolphinService.getProfiles();
-        
-        if (!profiles || profiles.length === 0) {
-            throw new Error('Nenhum perfil encontrado');
-        }
-        
-        // Teste 2: Iniciar primeiro perfil
-        console.log('2. Testando início do perfil...');
-        const profileId = profiles[0].id;
-        const startResult = await dolphinService.startProfile(profileId);
-        
-        // Teste 3: Criar nova aba
-        console.log('3. Testando criação de aba...');
-        const tabResult = await dolphinService.createTab(profileId);
-        
-        res.json({
-            success: true,
-            tests: {
-                profiles: profiles,
-                startProfile: startResult,
-                newTab: tabResult
-            }
-        });
-    } catch (error) {
-        console.error('Erro nos testes:', {
-            message: error.message,
-            stack: error.stack,
-            response: error.response?.data
-        });
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            details: error.response?.data,
-            stack: error.stack
-        });
-    }
-});
-
-app.post('/api/check-domains', upload.single('file'), async (req, res) => {
-    try {
-        // ... código existente ...
-
-        // Criar workers com diferentes perfis
-        const workers = [];
-        const batchSize = Math.ceil(domains.length / numWorkers);
-        
-        for (let i = 0; i < numWorkers; i++) {
-            const profile = await getNextAvailableProfile();
-            const workerData = {
-                domains: domains.slice(i * batchSize, (i + 1) * batchSize),
-                profileId: profile.id,
-                batchId: currentBatchId
-            };
-
-            const worker = new Worker('./worker.js', { workerData });
-            workers.push(worker);
-            
-            // Incrementar contagem de tabs para este perfil
-            const profileInfo = activeProfiles.get(profile.id);
-            profileInfo.tabs++;
-        }
-
-        // ... resto do código ...
-
-    } catch (error) {
-        console.error('Erro:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Limpar perfis inativos periodicamente
-setInterval(() => {
-    const now = Date.now();
-    for (const [profileId, info] of activeProfiles.entries()) {
-        if (now - info.startTime > 30 * 60 * 1000 && info.tabs === 0) { // 30 minutos sem uso
-            activeProfiles.delete(profileId);
-        }
-    }
-}, 5 * 60 * 1000); // Checar a cada 5 minutos
-
-// Configuração da porta
-const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, () => {
-    console.log(`Servidor rodando na porta ${PORT} com ${numWorkers} worker(s)`);
-});
-
-server.timeout = 1800000; // 30 minutos
-
-// Limpeza de recursos
-process.on('SIGTERM', () => {
-    workers.forEach(worker => worker.terminate());
-    process.exit(0);
+    // Tratamento de erros da conexão
+    ws.on('error', (error) => {
+        console.error('Erro na conexão WebSocket:', error);
+        clients.delete(ws);
+    });
 });
 
 module.exports = app;
