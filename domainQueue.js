@@ -5,17 +5,21 @@ class DomainQueue {
     constructor() {
         this.queue = [];
         this.results = {
-            available: [], // Vai armazenar objetos {colA, domain}
+            available: [],
             processing: false,
             total: 0,
-            processed: 0
+            processed: 0,
+            errors: 0,
+            currentDomain: null
         };
-        this.concurrentChecks = 10; // Aumentado para 10 verificações simultâneas
+        this.concurrentChecks = config.CONCURRENCY.MAX_PARALLEL;
+        this.batchSize = config.CONCURRENCY.BATCH_SIZE;
+        this.cache = new Map();
     }
 
     addDomains(domains) {
         try {
-            console.log('Adicionando domínios:', domains);
+            console.log('Adicionando domínios:', domains.length);
             this.queue = [...this.queue, ...domains];
             this.results.total += domains.length;
             
@@ -25,11 +29,19 @@ class DomainQueue {
             }
         } catch (error) {
             console.error('Erro ao adicionar domínios:', error);
+            this.results.errors++;
         }
     }
 
-    async checkDomain(item) {
+    async checkDomain(item, retryCount = 0) {
+        if (this.cache.has(item.domain)) {
+            return this.cache.get(item.domain);
+        }
+
         try {
+            this.results.currentDomain = item.domain;
+            console.log(`Verificando domínio: ${item.domain}`);
+
             const response = await axios.get(`https://registro.br/v2/ajax/avail/raw/${item.domain}`, {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -38,21 +50,23 @@ class DomainQueue {
                     'Referer': 'https://registro.br/',
                     'Origin': 'https://registro.br'
                 },
-                timeout: 3000 // Reduzido para 3 segundos
+                timeout: config.TIMEOUT.REGISTRO_BR
             });
 
-            console.log('Resposta bruta para', item.domain, ':', response.data);
-            
-            // Verificação mais robusta do status
-            if (response.data && 
-                (response.data.status === '0' || response.data.status === 0 || response.data.available === true)) {
-                console.log('Domínio disponível:', item.domain);
-                this.results.available.push(item);
-            }
-            this.results.processed++;
+            const isAvailable = response.data && 
+                (response.data.status === '0' || response.data.status === 0 || response.data.available === true);
+
+            this.cache.set(item.domain, isAvailable);
+            return isAvailable;
         } catch (error) {
-            console.error(`Erro ao verificar domínio ${item.domain}:`, error.message);
-            this.queue.push(item); // Recoloca na fila em caso de erro
+            if (retryCount < config.RETRY.MAX_ATTEMPTS) {
+                console.log(`Tentativa ${retryCount + 1} de ${config.RETRY.MAX_ATTEMPTS} para ${item.domain}`);
+                await new Promise(resolve => setTimeout(resolve, config.RETRY.DELAY * Math.pow(config.RETRY.BACKOFF, retryCount)));
+                return this.checkDomain(item, retryCount + 1);
+            }
+            console.error(`Erro ao verificar ${item.domain}:`, error.message);
+            this.results.errors++;
+            return false;
         }
     }
 
@@ -61,41 +75,55 @@ class DomainQueue {
             if (this.queue.length === 0) {
                 console.log('Fila vazia, finalizando processamento');
                 this.results.processing = false;
+                this.results.currentDomain = null;
                 return;
             }
 
             this.results.processing = true;
 
-            // Pega até 10 domínios para processar simultaneamente
-            const batch = this.queue.splice(0, this.concurrentChecks);
-            console.log(`Processando lote de ${batch.length} domínios`);
+            // Processa em lotes
+            for (let i = 0; i < this.queue.length; i += this.batchSize) {
+                const batch = this.queue.splice(0, this.batchSize);
+                console.log(`Processando lote de ${batch.length} domínios`);
 
-            // Processa o lote com um delay menor entre cada domínio
-            const promises = batch.map((item, index) => 
-                new Promise(resolve => 
-                    setTimeout(() => 
-                        resolve(this.checkDomain(item)), 
-                        index * 200) // Reduzido para 200ms entre cada requisição
-                )
-            );
+                const batchPromises = batch.map((item, index) => 
+                    new Promise(resolve => 
+                        setTimeout(() => 
+                            resolve(this.checkDomain(item)), 
+                            index * 200
+                        )
+                    )
+                );
 
-            await Promise.all(promises);
+                const results = await Promise.all(batchPromises);
+                
+                // Atualiza resultados
+                results.forEach((isAvailable, index) => {
+                    if (isAvailable) {
+                        this.results.available.push(batch[index]);
+                    }
+                    this.results.processed++;
+                });
 
-            // Reduzido o delay entre lotes
-            await new Promise(resolve => setTimeout(resolve, 1000)); // 1 segundo entre lotes
-            this.processQueue();
+                // Pausa entre lotes
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+
+            this.results.processing = false;
+            this.results.currentDomain = null;
+            this.cache.clear();
         } catch (error) {
             console.error('Erro no processamento da fila:', error);
             this.results.processing = false;
+            this.results.currentDomain = null;
         }
     }
 
-    getProgress() {
+    getResults() {
         return {
-            total: this.results.total,
-            processed: this.results.processed,
-            available: this.results.available.length,
-            processing: this.results.processing
+            ...this.results,
+            queueLength: this.queue.length,
+            cacheSize: this.cache.size
         };
     }
 
@@ -105,8 +133,11 @@ class DomainQueue {
             available: [],
             processing: false,
             total: 0,
-            processed: 0
+            processed: 0,
+            errors: 0,
+            currentDomain: null
         };
+        this.cache.clear();
         console.log('DomainQueue: Cache e resultados limpos');
     }
 }

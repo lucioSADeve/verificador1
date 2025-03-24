@@ -11,7 +11,13 @@ const config = require('./config');
 const domainQueue = require('./domainQueue');
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({ 
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 10 * 1024 * 1024, // 10MB
+        files: 1
+    }
+});
 const port = process.env.PORT || 3000;
 
 // Configurações básicas
@@ -94,24 +100,48 @@ function broadcastToClients(data) {
 
 // Rota para verificar progresso
 app.get('/api/progress', (req, res) => {
-    const results = domainQueue.getResults();
-    res.json(results);
+    try {
+        const results = domainQueue.getResults();
+        res.json(results);
+    } catch (error) {
+        console.error('Erro ao obter progresso:', error);
+        res.status(500).json({ 
+            error: 'Erro ao obter progresso',
+            message: error.message
+        });
+    }
 });
 
 // Rota para limpar cache
 app.post('/api/clear-cache', (req, res) => {
-    domainQueue.clearResults();
-    res.json({ message: 'Cache limpo com sucesso' });
+    try {
+        domainQueue.clearResults();
+        res.json({ message: 'Cache limpo com sucesso' });
+    } catch (error) {
+        console.error('Erro ao limpar cache:', error);
+        res.status(500).json({ 
+            error: 'Erro ao limpar cache',
+            message: error.message
+        });
+    }
 });
 
 // Rota para download dos resultados
 app.get('/api/download-results', (req, res) => {
-    const results = domainQueue.getResults();
-    const availableDomains = results.available.map(item => item.domain).join('\n');
-    
-    res.setHeader('Content-Type', 'text/plain');
-    res.setHeader('Content-Disposition', 'attachment; filename=dominios_disponiveis.txt');
-    res.send(availableDomains);
+    try {
+        const results = domainQueue.getResults();
+        const availableDomains = results.available.map(item => item.domain).join('\n');
+        
+        res.setHeader('Content-Type', 'text/plain');
+        res.setHeader('Content-Disposition', 'attachment; filename=dominios_disponiveis.txt');
+        res.send(availableDomains);
+    } catch (error) {
+        console.error('Erro ao gerar download:', error);
+        res.status(500).json({ 
+            error: 'Erro ao gerar arquivo de download',
+            message: error.message
+        });
+    }
 });
 
 // Rota para upload de arquivo Excel
@@ -136,15 +166,6 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             return res.status(400).json({ 
                 error: 'Arquivo inválido. Por favor, envie um arquivo Excel (.xlsx ou .xls)',
                 tipo: req.file.mimetype 
-            });
-        }
-
-        // Verifica o tamanho do arquivo (máximo 10MB)
-        if (req.file.size > 10 * 1024 * 1024) {
-            console.error('Arquivo muito grande:', req.file.size);
-            return res.status(400).json({ 
-                error: 'Arquivo muito grande. O tamanho máximo permitido é 10MB.',
-                tamanho: req.file.size
             });
         }
 

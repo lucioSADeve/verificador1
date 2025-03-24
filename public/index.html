@@ -4,337 +4,331 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Verificador de Domínios</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .upload-area {
-            border: 2px dashed #ccc;
-            padding: 20px;
-            text-align: center;
-            margin: 20px 0;
-        }
-        .results {
-            margin-top: 20px;
-        }
         .progress {
-            margin: 20px 0;
-            padding: 10px;
-            background: #f0f0f0;
-            border-radius: 4px;                                                                                         
+            height: 25px;
+            font-size: 14px;
         }
-        .download-button {
-            display: inline-block;
-            padding: 10px 20px;
-            background-color: #4CAF50;
-            color: white;
-            text-decoration: none;
-            border-radius: 4px;
-            margin-top: 10px;
+        .result-card {
+            margin-bottom: 1rem;
         }
-        .loading {
-            display: none;
+        .error-message {
+            color: #dc3545;
+            margin-top: 0.5rem;
         }
-        .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #3498db;
-            border-radius: 50%;
-            width: 30px;
-            height: 30px;
-            animation: spin 1s linear infinite;
-            margin: 10px auto;
+        .success-message {
+            color: #198754;
+            margin-top: 0.5rem;
         }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        .clear-button {
-            display: inline-block;
-            padding: 10px 20px;
-            background-color: #e74c3c;
-            color: white;
-            text-decoration: none;
-            border-radius: 4px;
-            margin: 10px;
-            cursor: pointer;
-            border: none;
-        }
-        .button-container {
-            margin-top: 20px;
-            display: flex;
-            gap: 10px;
-            justify-content: center;
+        .stats-card {
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
         }
     </style>
 </head>
 <body>
-    <h1>Verificador de Domínios</h1>
-    <div class="upload-area">
-        <h3>Arraste seu arquivo Excel ou clique para selecionar</h3>
-        <p>O arquivo deve ter os domínios na coluna B</p>
-        <input type="file" id="fileInput" accept=".xlsx,.xls">
+    <div class="container py-5">
+        <h1 class="text-center mb-4">Verificador de Domínios</h1>
+        
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-body">
+                        <form id="uploadForm" class="mb-4">
+                            <div class="mb-3">
+                                <label for="file" class="form-label">Selecione o arquivo Excel</label>
+                                <input type="file" class="form-control" id="file" accept=".xlsx,.xls" required>
+                                <div class="form-text">O arquivo deve conter domínios na coluna B. Tamanho máximo: 10MB</div>
+                            </div>
+                            <button type="submit" class="btn btn-primary" id="submitBtn">Verificar Domínios</button>
+                        </form>
+
+                        <div id="errorMessage" class="error-message d-none"></div>
+                        <div id="successMessage" class="success-message d-none"></div>
+
+                        <div id="progressSection" class="d-none">
+                            <div class="progress mb-3">
+                                <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                     role="progressbar" 
+                                     style="width: 0%">0%</div>
+                            </div>
+                            <div class="text-center mb-3">
+                                <span id="progressText">Processando domínios...</span>
+                            </div>
+                            <div class="stats-card">
+                                <div class="row">
+                                    <div class="col-md-4">
+                                        <h5>Total</h5>
+                                        <p id="totalCount">0</p>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <h5>Disponíveis</h5>
+                                        <p id="availableCount">0</p>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <h5>Indisponíveis</h5>
+                                        <p id="unavailableCount">0</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="resultsSection" class="d-none">
+                            <h3 class="mb-3">Resultados</h3>
+                            <div class="mb-3">
+                                <button class="btn btn-success" id="downloadBtn">Download dos Domínios Disponíveis</button>
+                                <button class="btn btn-danger" id="clearBtn">Limpar Resultados</button>
+                            </div>
+                            <div id="resultsList"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
-    <div class="loading">Processando arquivo...</div>
-    <div class="progress"></div>
-    <div class="results"></div>
 
     <script>
-        const fileInput = document.getElementById('fileInput');
-        const loading = document.querySelector('.loading');
-        const progress = document.querySelector('.progress');
-        const results = document.querySelector('.results');
-        let isProcessing = false;
+        const uploadForm = document.getElementById('uploadForm');
+        const submitBtn = document.getElementById('submitBtn');
+        const progressSection = document.getElementById('progressSection');
+        const resultsSection = document.getElementById('resultsSection');
+        const progressBar = document.querySelector('.progress-bar');
+        const progressText = document.getElementById('progressText');
+        const errorMessage = document.getElementById('errorMessage');
+        const successMessage = document.getElementById('successMessage');
+        const resultsList = document.getElementById('resultsList');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const totalCount = document.getElementById('totalCount');
+        const availableCount = document.getElementById('availableCount');
+        const unavailableCount = document.getElementById('unavailableCount');
 
-        // Cria botão de limpar cache
-        const clearButton = document.createElement('button');
-        clearButton.className = 'clear-button';
-        clearButton.textContent = 'Cancelar e Limpar Cache';
-        clearButton.style.display = 'none';
-        document.querySelector('.upload-area').after(clearButton);
+        let ws = null;
+        let monitoringInterval = null;
 
-        // Adiciona listener para quando a aba for fechada
-        window.addEventListener('beforeunload', async (event) => {
-            if (isProcessing) {
-                await clearCache();
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.classList.remove('d-none');
+            successMessage.classList.add('d-none');
+        }
+
+        function showSuccess(message) {
+            successMessage.textContent = message;
+            successMessage.classList.remove('d-none');
+            errorMessage.classList.add('d-none');
+        }
+
+        function updateProgress(progress) {
+            progressBar.style.width = `${progress}%`;
+            progressBar.textContent = `${progress}%`;
+        }
+
+        function updateStats(stats) {
+            totalCount.textContent = stats.total;
+            availableCount.textContent = stats.available;
+            unavailableCount.textContent = stats.unavailable;
+        }
+
+        function displayResults(results) {
+            resultsList.innerHTML = '';
+            
+            if (results.available.length > 0) {
+                const availableCard = document.createElement('div');
+                availableCard.className = 'card result-card border-success';
+                availableCard.innerHTML = `
+                    <div class="card-header bg-success text-white">
+                        Domínios Disponíveis (${results.available.length})
+                    </div>
+                    <div class="card-body">
+                        <ul class="list-group">
+                            ${results.available.map(item => `
+                                <li class="list-group-item">
+                                    <strong>${item.domain}</strong>
+                                    <br>
+                                    <small class="text-muted">Dados originais: ${item.originalData}</small>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+                resultsList.appendChild(availableCard);
+            }
+
+            if (results.unavailable.length > 0) {
+                const unavailableCard = document.createElement('div');
+                unavailableCard.className = 'card result-card border-danger';
+                unavailableCard.innerHTML = `
+                    <div class="card-header bg-danger text-white">
+                        Domínios Indisponíveis (${results.unavailable.length})
+                    </div>
+                    <div class="card-body">
+                        <ul class="list-group">
+                            ${results.unavailable.map(item => `
+                                <li class="list-group-item">
+                                    <strong>${item.domain}</strong>
+                                    <br>
+                                    <small class="text-muted">Dados originais: ${item.originalData}</small>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+                resultsList.appendChild(unavailableCard);
+            }
+
+            if (results.errors.length > 0) {
+                const errorsCard = document.createElement('div');
+                errorsCard.className = 'card result-card border-warning';
+                errorsCard.innerHTML = `
+                    <div class="card-header bg-warning text-dark">
+                        Erros (${results.errors.length})
+                    </div>
+                    <div class="card-body">
+                        <ul class="list-group">
+                            ${results.errors.map(error => `
+                                <li class="list-group-item">
+                                    <strong>${error.domain}</strong>
+                                    <br>
+                                    <small class="text-danger">${error.message}</small>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+                resultsList.appendChild(errorsCard);
+            }
+        }
+
+        function startMonitoring() {
+            if (monitoringInterval) {
+                clearInterval(monitoringInterval);
+            }
+
+            monitoringInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/api/progress');
+                    if (!response.ok) {
+                        throw new Error('Erro ao obter progresso');
+                    }
+                    const data = await response.json();
+                    
+                    updateProgress(Math.round((data.processed / data.total) * 100));
+                    updateStats({
+                        total: data.total,
+                        available: data.available.length,
+                        unavailable: data.unavailable.length
+                    });
+
+                    if (data.processed === data.total) {
+                        clearInterval(monitoringInterval);
+                        displayResults(data);
+                        resultsSection.classList.remove('d-none');
+                        submitBtn.disabled = false;
+                        showSuccess('Verificação concluída com sucesso!');
+                    }
+                } catch (error) {
+                    console.error('Erro ao monitorar progresso:', error);
+                    showError('Erro ao monitorar progresso. Tente novamente.');
+                }
+            }, 1000);
+        }
+
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const fileInput = document.getElementById('file');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                showError('Por favor, selecione um arquivo');
+                return;
+            }
+
+            // Validação do tipo de arquivo
+            if (!file.type.includes('spreadsheet') && !file.type.includes('excel')) {
+                showError('Por favor, selecione um arquivo Excel válido (.xlsx ou .xls)');
+                return;
+            }
+
+            // Validação do tamanho do arquivo
+            if (file.size > 10 * 1024 * 1024) {
+                showError('O arquivo é muito grande. O tamanho máximo permitido é 10MB');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            submitBtn.disabled = true;
+            progressSection.classList.remove('d-none');
+            resultsSection.classList.add('d-none');
+            errorMessage.classList.add('d-none');
+            successMessage.classList.add('d-none');
+            updateProgress(0);
+            updateStats({ total: 0, available: 0, unavailable: 0 });
+
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Erro ao fazer upload do arquivo');
+                }
+
+                showSuccess(data.message);
+                startMonitoring();
+            } catch (error) {
+                console.error('Erro:', error);
+                showError(error.message);
+                submitBtn.disabled = false;
             }
         });
 
-        // Função melhorada para limpar cache
-        async function clearCache() {
+        downloadBtn.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/download-results');
+                if (!response.ok) {
+                    throw new Error('Erro ao baixar resultados');
+                }
+                
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'dominios_disponiveis.txt';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            } catch (error) {
+                console.error('Erro:', error);
+                showError('Erro ao baixar resultados');
+            }
+        });
+
+        clearBtn.addEventListener('click', async () => {
             try {
                 const response = await fetch('/api/clear-cache', {
-                    method: 'POST',
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json'
-                    }
+                    method: 'POST'
                 });
 
                 if (!response.ok) {
                     throw new Error('Erro ao limpar cache');
                 }
 
-                // Reseta interface e estado
-                progress.innerHTML = '';
-                results.innerHTML = '';
-                loading.style.display = 'none';
-                clearButton.style.display = 'none';
-                fileInput.value = '';
-                fileInput.disabled = false;
-                isProcessing = false;
-
-                // Limpa qualquer intervalo pendente
-                if (window.checkInterval) {
-                    clearInterval(window.checkInterval);
-                }
-
-                results.innerHTML = '<p style="color: green">Cache limpo com sucesso!</p>';
-                setTimeout(() => results.innerHTML = '', 3000);
+                resultsSection.classList.add('d-none');
+                showSuccess('Resultados limpos com sucesso!');
             } catch (error) {
                 console.error('Erro:', error);
-                results.innerHTML = `<p style="color: red">Erro: ${error.message}</p>`;
+                showError('Erro ao limpar resultados');
             }
-        }
-
-        clearButton.onclick = clearCache;
-
-        fileInput.addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            // Verifica o tipo do arquivo
-            if (!file.type.includes('spreadsheet') && !file.type.includes('excel')) {
-                results.innerHTML = '<p style="color: red">Erro: Por favor, selecione um arquivo Excel (.xlsx ou .xls)</p>';
-                fileInput.value = '';
-                return;
-            }
-
-            // Verifica o tamanho do arquivo (máximo 10MB)
-            if (file.size > 10 * 1024 * 1024) {
-                results.innerHTML = '<p style="color: red">Erro: O arquivo é muito grande. O tamanho máximo permitido é 10MB.</p>';
-                fileInput.value = '';
-                return;
-            }
-
-            console.log('Arquivo selecionado:', file.name);
-            const formData = new FormData();
-            formData.append('file', file);
-
-            loading.style.display = 'block';
-            progress.innerHTML = '<div class="spinner"></div>Iniciando processamento...';
-            results.innerHTML = '';
-            clearButton.style.display = 'inline-block';
-            fileInput.disabled = true;
-            isProcessing = true;
-
-            try {
-                const response = await fetch('/api/upload', {
-                    method: 'POST',
-                    headers: {
-                        'Accept': 'application/json'
-                    },
-                    body: formData
-                });
-
-                const data = await response.json();
-                console.log('Resposta do servidor:', data);
-
-                if (!response.ok) {
-                    let errorMessage = 'Erro desconhecido';
-                    if (data && typeof data === 'object') {
-                        if (data.error && typeof data.error === 'string') {
-                            errorMessage = data.error;
-                        } else if (data.error && typeof data.error === 'object') {
-                            errorMessage = JSON.stringify(data.error);
-                        }
-                        if (data.detalhes) {
-                            errorMessage += `<br><small>Detalhes: ${data.detalhes}</small>`;
-                        }
-                    }
-                    throw new Error(errorMessage);
-                }
-
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-
-                startMonitoring();
-            } catch (error) {
-                console.error('Erro:', error);
-                results.innerHTML = `
-                    <p style="color: red">
-                        <strong>Erro:</strong> ${error.message}<br>
-                        <small>Por favor, verifique se o arquivo está correto e tente novamente.</small>
-                    </p>
-                `;
-                loading.style.display = 'none';
-                progress.innerHTML = '';
-                clearButton.style.display = 'none';
-                fileInput.disabled = false;
-                isProcessing = false;
-            }
-        });
-
-        function startMonitoring() {
-            const checkInterval = setInterval(async () => {
-                if (!isProcessing) {
-                    clearInterval(checkInterval);
-                    return;
-                }
-
-                try {
-                    const isDone = await checkProgressDirectly();
-                    if (isDone) {
-                        clearInterval(checkInterval);
-                        isProcessing = false;
-                    }
-                } catch (error) {
-                    console.error('Erro:', error);
-                    clearInterval(checkInterval);
-                    progress.innerHTML = `
-                        <p style="color: red">
-                            <strong>Erro ao verificar progresso:</strong> ${error.message}<br>
-                            <small>Tente recarregar a página e fazer o upload novamente.</small>
-                        </p>
-                    `;
-                    isProcessing = false;
-                }
-            }, 1000);
-        }
-
-        async function checkProgressDirectly() {
-            if (!isProcessing) return false;
-            
-            try {
-                const response = await fetch('/api/progress', {
-                    method: 'GET',
-                    headers: {
-                        'Accept': 'application/json',
-                        'Cache-Control': 'no-cache'
-                    }
-                });
-                
-                if (!response.ok) {
-                    throw new Error(`Erro ao verificar progresso: ${response.status}`);
-                }
-
-                const data = await response.json();
-                
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-                
-                if (data.total > 0) {
-                    const percent = Math.round((data.processed / data.total) * 100);
-                    progress.innerHTML = `
-                        <div class="spinner"></div>
-                        <strong>Progresso: ${percent}%</strong><br>
-                        Processados: ${data.processed} de ${data.total}<br>
-                        Disponíveis: ${data.available || 0}<br>
-                        Erros: ${data.errors || 0}<br>
-                        ${data.currentDomain ? `<small>Processando: ${data.currentDomain}</small><br>` : ''}
-                        <small>Tempo estimado: ${Math.ceil((data.total - data.processed) / (data.processed || 1) * 1)} segundos</small>
-                    `;
-
-                    // Mostra botão de limpar durante processamento
-                    clearButton.style.display = 'inline-block';
-
-                    if (data.processed === data.total) {
-                        showDownloadButton(data);
-                        isProcessing = false;
-                        return true;
-                    }
-                }
-                return false;
-            } catch (error) {
-                console.error('Erro ao verificar progresso:', error);
-                progress.innerHTML = `
-                    <p style="color: red">
-                        <strong>Erro ao verificar progresso:</strong> ${error.message}<br>
-                        <small>Tente recarregar a página e fazer o upload novamente.</small>
-                    </p>
-                `;
-                isProcessing = false;
-                return true;
-            }
-        }
-
-        function showDownloadButton(data) {
-            const summary = data?.summary || {};
-            results.innerHTML = `
-                <h3>Processamento concluído!</h3>
-                <p>
-                    <strong>Resumo:</strong><br>
-                    Total de domínios: ${summary.total || 0}<br>
-                    Disponíveis: ${summary.available || 0}<br>
-                    Erros: ${summary.errors || 0}<br>
-                    ${summary.time ? `Tempo total: ${summary.time}` : ''}
-                </p>
-                <div class="button-container">
-                    <a href="/api/download-results" class="download-button">
-                        Baixar Domínios Disponíveis
-                    </a>
-                    <button onclick="clearAndReset()" class="clear-button">
-                        Limpar e Iniciar Novo
-                    </button>
-                </div>
-            `;
-            loading.style.display = 'none';
-            clearButton.style.display = 'none';
-        }
-
-        // Nova função para limpar e resetar completamente
-        async function clearAndReset() {
-            await clearCache();
-            location.reload(); // Recarrega a página para garantir um estado limpo
-        }
-
-        window.addEventListener('error', function(event) {
-            console.error('Erro global:', event.error);
-            progress.innerHTML = `<p style="color: red">Erro inesperado: ${event.error?.message || 'Erro desconhecido'}</p>`;
         });
     </script>
 </body>

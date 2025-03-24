@@ -1,50 +1,51 @@
 module.exports = {
-    // Configurações de URL
+    // URLs base para as APIs
     URLS: {
-        API_BASE: process.env.API_BASE || 'https://verificador1-git-main-lucio-dev-s-projects.vercel.app',
-        WS_BASE: process.env.WS_BASE || 'wss://verificador1-git-main-lucio-dev-s-projects.vercel.app'
+        API_BASE: 'https://registro.br/tecnologia/ferramentas/consulta-whois/',
+        WHOIS_API: 'https://registro.br/tecnologia/ferramentas/consulta-whois/',
+        DNS_API: 'https://dns.google/resolve'
     },
 
-    // Configurações de timeout
+    // Timeouts para diferentes serviços
     TIMEOUT: {
-        REGISTRO_BR: 3000,    // 3 segundos para registro.br
-        WHOIS: 5000,         // 5 segundos para whois
-        DNS: 2000            // 2 segundos para DNS
+        REGISTRO_BR: 3000,  // 3 segundos para registro.br
+        WHOIS: 5000,        // 5 segundos para whois
+        DNS: 2000           // 2 segundos para DNS
     },
 
     // Configurações de retry
     RETRY: {
-        MAX_ATTEMPTS: 3,     // Número máximo de tentativas
+        MAX_ATTEMPTS: 3,    // Número máximo de tentativas
         DELAY: 1000,        // Delay entre tentativas (1 segundo)
-        BACKOFF: 1.5        // Fator de multiplicação do delay a cada retry
+        BACKOFF_FACTOR: 2   // Fator de backoff exponencial
     },
 
     // Configurações de cache
     CACHE: {
-        TTL: 300000,        // Tempo de vida do cache (5 minutos)
-        MAX_SIZE: 1000      // Máximo de itens no cache
+        TTL: 3600,          // Tempo de vida do cache (1 hora)
+        MAX_SIZE: 1000      // Tamanho máximo do cache (1000 itens)
     },
 
     // Configurações de concorrência
     CONCURRENCY: {
-        MAX_PARALLEL: 10,   // Máximo de verificações simultâneas
-        BATCH_SIZE: 5       // Tamanho do lote de processamento
+        MAX_PARALLEL: 10,   // Número máximo de verificações paralelas
+        BATCH_SIZE: 50      // Tamanho do lote para processamento
     },
 
     // Servidores DNS para verificação
     DNS_SERVERS: [
-        '8.8.8.8',         // Google
-        '1.1.1.1',         // Cloudflare
+        '8.8.8.8',         // Google DNS
+        '1.1.1.1',         // Cloudflare DNS
         '208.67.222.222'   // OpenDNS
     ],
 
     // Configurações de confiança
     CONFIDENCE: {
-        MIN_SOURCES: 2,     // Mínimo de fontes que precisam concordar
-        WEIGHT: {
-            REGISTRO_BR: 0.5,
-            WHOIS: 0.3,
-            DNS: 0.2
+        MIN_SOURCES: 2,     // Número mínimo de fontes para confiança
+        WEIGHTS: {
+            REGISTRO_BR: 1.0,
+            WHOIS: 0.8,
+            DNS: 0.6
         }
     }
 };

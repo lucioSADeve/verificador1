@@ -1,152 +1,132 @@
-const { parentPort } = require('worker_threads');
+const axios = require('axios');
+const config = require('./config');
 const pLimit = require('p-limit');
-const fetch = require('node-fetch');
 
-// Configurações otimizadas
-const CONCURRENT_LIMIT = 3; // Reduzido para 3 verificações simultâneas
-const BATCH_SIZE = 2;       // Reduzido para 2 domínios por lote
-const FETCH_TIMEOUT = 10000; // Aumentado para 10 segundos
-const RETRY_DELAY = 3000;   // 3 segundos entre tentativas
-const MAX_RETRIES = 3;      // Máximo de 3 tentativas
-
-// Cache otimizado
-const resultsCache = new Map();
-
-// Função otimizada para verificar domínio com retry
-async function checkDomain(domain, retryCount = 0) {
-    if (resultsCache.has(domain)) {
-        return resultsCache.get(domain);
+class DomainWorker {
+    constructor() {
+        this.queue = [];
+        this.results = {
+            available: [],
+            unavailable: [],
+            errors: [],
+            processed: 0,
+            total: 0
+        };
+        this.cache = new Map();
+        this.limit = pLimit(config.CONCURRENCY.MAX_PARALLEL);
+        this.isProcessing = false;
     }
 
-    try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
-
-        const response = await fetch(`https://registro.br/v2/ajax/whois/${domain}`, {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json',
-                'Cache-Control': 'no-cache',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            },
-            signal: controller.signal,
-            timeout: FETCH_TIMEOUT
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-            throw new Error(`Erro HTTP! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        const isAvailable = data.status === 'AVAILABLE';
-        resultsCache.set(domain, isAvailable);
-        return isAvailable;
-    } catch (error) {
-        if (retryCount < MAX_RETRIES) {
-            console.log(`Tentativa ${retryCount + 1} de ${MAX_RETRIES} para ${domain}`);
-            await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-            return checkDomain(domain, retryCount + 1);
-        }
-        console.error(`Erro ao verificar ${domain}:`, error.message);
-        return false;
-    }
-}
-
-// Processamento otimizado em lotes
-async function processDomainsParallel(domains) {
-    const limit = pLimit(CONCURRENT_LIMIT);
-    const results = [];
-    let processed = 0;
-    let available = 0;
-    let errors = 0;
-    
-    // Processa em lotes pequenos
-    for (let i = 0; i < domains.length; i += BATCH_SIZE) {
-        const batch = domains.slice(i, i + BATCH_SIZE);
-        
-        const batchPromises = batch.map(domain => 
-            limit(async () => {
-                try {
-                    const isAvailable = await checkDomain(domain);
-                    processed++;
-                    if (isAvailable) available++;
-                    
-                    // Reporta progresso para cada domínio
-                    parentPort.postMessage({
-                        type: 'progress',
-                        currentIndex: i + batch.indexOf(domain),
-                        processed,
-                        total: domains.length,
-                        available,
-                        errors,
-                        currentDomain: domain
-                    });
-
-                    return {
-                        domain,
-                        available: isAvailable,
-                        error: false
-                    };
-                } catch (error) {
-                    processed++;
-                    errors++;
-                    return {
-                        domain,
-                        available: false,
-                        error: true,
-                        errorMessage: error.message
-                    };
-                }
-            })
-        );
-
-        // Processa lote atual
-        const batchResults = await Promise.all(batchPromises);
-        results.push(...batchResults);
-
-        // Pausa maior entre lotes para evitar sobrecarga
-        await new Promise(resolve => setTimeout(resolve, 2000));
+    addDomains(domains) {
+        // Filtra domínios duplicados e inválidos
+        const uniqueDomains = [...new Set(domains.map(d => d.domain))];
+        this.queue = uniqueDomains.map(domain => ({
+            domain,
+            originalData: domains.find(d => d.domain === domain)?.originalData || domain
+        }));
+        this.results.total = this.queue.length;
+        this.results.processed = 0;
+        this.results.available = [];
+        this.results.unavailable = [];
+        this.results.errors = [];
+        this.startProcessing();
     }
 
-    return results;
-}
+    async checkDomain(domainData) {
+        const { domain, originalData } = domainData;
 
-// Listener de mensagens
-parentPort.on('message', async ({ domains }) => {
-    try {
-        console.time('processamento');
-        const results = await processDomainsParallel(domains);
-        console.timeEnd('processamento');
-        
-        resultsCache.clear();
-        
-        parentPort.postMessage({ 
-            type: 'complete', 
-            results,
-            summary: {
-                total: domains.length,
-                processed: results.length,
-                available: results.filter(r => r.available).length,
-                errors: results.filter(r => r.error).length,
-                time: console.timeEnd('processamento')
+        // Verifica cache primeiro
+        if (this.cache.has(domain)) {
+            const cachedResult = this.cache.get(domain);
+            if (Date.now() - cachedResult.timestamp < config.CACHE.TTL * 1000) {
+                return cachedResult.result;
             }
-        });
-    } catch (error) {
-        console.error('Erro fatal:', error);
-        parentPort.postMessage({ 
-            type: 'error', 
-            error: error.message || 'Erro no processamento'
-        });
-    }
-});
+        }
 
-// Tratamento de erros global
-process.on('unhandledRejection', (error) => {
-    console.error('Erro não tratado:', error);
-    parentPort.postMessage({ 
-        type: 'error', 
-        error: 'Erro interno no processamento'
-    });
-}); 
+        try {
+            // Faz requisição para o registro.br
+            const response = await axios.get(`${config.URLS.WHOIS_API}${domain}`, {
+                timeout: config.TIMEOUT.WHOIS,
+                validateStatus: status => status === 200
+            });
+
+            const isAvailable = response.data.includes('Status: free');
+
+            // Atualiza cache
+            this.cache.set(domain, {
+                result: isAvailable,
+                timestamp: Date.now()
+            });
+
+            return isAvailable;
+        } catch (error) {
+            console.error(`Erro ao verificar domínio ${domain}:`, error.message);
+            throw error;
+        }
+    }
+
+    async processQueue() {
+        if (this.isProcessing || this.queue.length === 0) return;
+
+        this.isProcessing = true;
+        const batchSize = config.CONCURRENCY.BATCH_SIZE;
+
+        while (this.queue.length > 0) {
+            const batch = this.queue.splice(0, batchSize);
+            const promises = batch.map(domainData => 
+                this.limit(async () => {
+                    try {
+                        const isAvailable = await this.checkDomain(domainData);
+                        if (isAvailable) {
+                            this.results.available.push(domainData);
+                        } else {
+                            this.results.unavailable.push(domainData);
+                        }
+                    } catch (error) {
+                        this.results.errors.push({
+                            domain: domainData.domain,
+                            message: error.message
+                        });
+                    } finally {
+                        this.results.processed++;
+                    }
+                })
+            );
+
+            await Promise.all(promises);
+        }
+
+        this.isProcessing = false;
+    }
+
+    startProcessing() {
+        if (!this.isProcessing) {
+            this.processQueue();
+        }
+    }
+
+    getResults() {
+        return {
+            ...this.results,
+            cache: {
+                size: this.cache.size,
+                maxSize: config.CACHE.MAX_SIZE
+            }
+        };
+    }
+
+    clearResults() {
+        this.queue = [];
+        this.results = {
+            available: [],
+            unavailable: [],
+            errors: [],
+            processed: 0,
+            total: 0
+        };
+        this.cache.clear();
+        this.isProcessing = false;
+    }
+}
+
+module.exports = new DomainWorker(); 

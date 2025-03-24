@@ -1,50 +1,49 @@
-# Dependencies
+# Dependências
 node_modules/
 npm-debug.log
 yarn-debug.log
 yarn-error.log
 
-# Environment
+# Ambiente
 .env
 .env.local
 .env.*.local
 
-# Build
-/build
-/dist
+# Logs
+logs/
+*.log
 
-# IDE/Editor
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# IDEs e editores
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
 
-# OS
-.DS_Store
-Thumbs.db
+# Arquivos temporários
+tmp/
+temp/
 
-# Logs
-logs
-*.log
+# Arquivos de build
+dist/
+build/
+.next/
+out/
 
-# Temp files
-*.tmp
-.temp/
+# Arquivos de cache
+.cache/
+.npm/
+.eslintcache
 
-# testing
-/coverage
+# Arquivos de cobertura
+coverage/
 
-# misc
-.DS_Store
-*.pem
-
-# local env files
-.env.development.local
-.env.test.local
-.env.production.local
-
-# vercel
-.vercel
+# Arquivos de deploy
+.vercel/
 
 # uploads
 uploads/*

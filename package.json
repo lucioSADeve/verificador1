@@ -1,16 +1,20 @@
 {
-  "name": "verificador-dominios",
+  "name": "verificador1",
   "version": "1.0.0",
   "description": "Verificador de disponibilidade de domínios",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
-    "vercel-build": "echo hello"
+    "dev": "nodemon server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "domain",
+    "checker",
+    "whois",
+    "dns"
+  ],
+  "author": "Lucio Campos",
+  "license": "MIT",
   "dependencies": {
     "axios": "^1.7.9",
     "cors": "^2.8.5",
